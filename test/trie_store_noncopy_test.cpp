@@ -75,7 +75,7 @@ void TrieStoreTest_ReadWriteTest() {
 
   // Loop for enough time to ensure that the thread is blocked on the promise.
   for (int i = 0; i < 100000; i++) {
-    //std::cout << "i : " << i << std::endl;
+    std::cout << "i : " << i << std::endl;
     {
       auto guard = store.Get<uint32_t>("a");
       assert(**guard == 1);

@@ -35,20 +35,24 @@ void TrieTest_NonCopyableTest()
   }
 
   trie = trie.Remove("te");
+  if (trie.Get<Integer>("te") != nullptr) {
+    std::cout << "'te' still exists after removal" << std::endl;
+    // return;
+  }
   trie = trie.Remove("tes");
   trie = trie.Remove("test");
 
   if (trie.Get<Integer>("te") != nullptr) {
     std::cout << "Test failed: 'te' still exists after removal" << std::endl;
-    return;
+    // return;
   }
   if (trie.Get<Integer>("tes") != nullptr) {
     std::cout << "Test failed: 'tes' still exists after removal" << std::endl;
-    return;
+    // return;
   }
   if (trie.Get<Integer>("test") != nullptr) {
     std::cout << "Test failed: 'test' still exists after removal" << std::endl;
-    return;
+    // return;
   }
 
   std::cout << "All tests passed!" << std::endl;

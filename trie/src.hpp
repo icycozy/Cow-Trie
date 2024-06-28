@@ -38,8 +38,8 @@ class TrieNode {
   // contains a value or not.
   //
   // Note: if you want to convert `unique_ptr` into `shared_ptr`, you can use `std::shared_ptr<T>(std::move(ptr))`.
-  virtual auto Clone() const -> std::unique_ptr<TrieNode> { return std::make_unique<TrieNode>(children_); }
-
+  // virtual auto Clone；； const -> std::unique_ptr<TrieNode> { return std::make_unique<TrieNode>(children_); }
+  virtual auto Clone() const -> std::shared_ptr<TrieNode> { return std::make_shared<TrieNode>(children_); }
   // A map of children, where the key is the next character in the key, and the value is the next TrieNode.
   std::map<char, std::shared_ptr<const TrieNode>> children_;
 
@@ -66,8 +66,12 @@ class TrieNodeWithValue : public TrieNode {
   // Override the Clone method to also clone the value.
   //
   // Note: if you want to convert `unique_ptr` into `shared_ptr`, you can use `std::shared_ptr<T>(std::move(ptr))`.
-  auto Clone() const -> std::unique_ptr<TrieNode> override {
-    return std::make_unique<TrieNodeWithValue<T>>(children_, value_);
+  
+  // auto Clone() const -> std::unique_ptr<TrieNode> override {
+  //   return std::make_unique<TrieNodeWithValue<T>>(children_, value_);
+  // }
+  auto Clone() const -> std::shared_ptr<TrieNode> override {
+    return std::make_shared<TrieNodeWithValue<T>>(children_, value_);
   }
 
   // The value associated with this trie node.
@@ -94,17 +98,92 @@ class Trie {
   // 2. If the key is in the trie but the type is mismatched, return nullptr.
   // 3. Otherwise, return the value.
   template <class T>
-  auto Get(std::string_view key) const -> const T *;
+  auto Get(std::string_view key) const -> const T * {
+    std::shared_ptr<const TrieNode> cur = root_;
+    for(char ch : key) {
+        if(!cur || cur->children_.find(ch)==cur->children_.end())
+          return nullptr;
+        cur = cur->children_.at(ch);
+    }
+    if(cur && cur->is_value_node_) {
+      auto node = std::dynamic_pointer_cast<const TrieNodeWithValue<T>>(cur);
+      if(node) return node->value_.get(); 
+    }
+    return nullptr;
+  };
 
   // Put a new key-value pair into the trie. If the key already exists, overwrite the value.
   // Returns the new trie.
   template <class T>
-  auto Put(std::string_view key, T value) const -> Trie;
+  auto Put(std::string_view key, T value) const -> Trie {
+    auto newroot = root_ ? root_->Clone() : std::make_shared<TrieNode>();
+    std::shared_ptr<TrieNode> cur = newroot, pre = nullptr;
+    char pch = 0;
+    for(char ch : key) {
+      pre = cur;
+      pch = ch;
+      std::shared_ptr<TrieNode> newNode;
+      if(cur->children_.find(ch) == cur->children_.end())
+        newNode = std::make_shared<TrieNode>();
+      else
+        newNode = cur->children_.at(ch)->Clone();
+      cur->children_[ch] = newNode;
+      cur = newNode;
+    }
+    if(!cur->is_value_node_) {
+      auto valuePtr = std::make_shared<T>(std::move(value));
+      auto newNode = std::make_shared<TrieNodeWithValue<T>>(cur->children_, std::move(valuePtr));
+      pre->children_[pch] = std::move(newNode);
+    }
+    else {
+      auto node = std::dynamic_pointer_cast<TrieNodeWithValue<T>>(cur);
+      node->value_ = std::make_shared<T>(std::move(value));
+    }
+    return Trie(newroot);
+  };
 
   // Remove the key from the trie. If the key does not exist, return the original trie.
   // Otherwise, returns the new trie.
-  auto Remove(std::string_view key) const -> Trie;
+  auto Remove(std::string_view key) const -> Trie {
+    if(!root_) return *this;
+
+    std::vector<std::pair<char, std::shared_ptr<TrieNode>>> path;
+    auto newRoot = root_->Clone();
+    std::shared_ptr<TrieNode> cur = newRoot;
+    bool exists = true;
+
+    for(char ch : key) {
+      if (cur->children_.find(ch) == cur->children_.end()) {
+          exists = false;
+          break;
+      }
+      path.emplace_back(ch, cur);
+      cur = cur->children_.at(ch)->Clone();
+    }
+
+    if(!exists || !cur->is_value_node_) return *this;
+
+    if (!cur->children_.empty()) {
+      auto newNode = std::make_shared<TrieNode>(std::move(cur->children_));
+      cur = newNode;
+    }
+    else {
+      for (auto it = path.rbegin(); it != path.rend(); ++it) {
+          it->second->children_.erase(it->first); 
+          if (!it->second->children_.empty() || it->second->is_value_node_) break;
+      }
+    }
+
+    path.emplace_back('\0', cur);
+    for(auto it=path.begin(); (it+1)!=path.end();it++){
+      if(it->second->children_.find(it->first)==it->second->children_.end()) break;
+      it->second->children_[it->first] = (it+1)->second; 
+    }
+
+    return Trie(newRoot);
+  };
 };
+
 
 
 // This class is used to guard the value returned by the trie. It holds a reference to the root so
@@ -128,15 +207,28 @@ class TrieStore {
   // This function returns a ValueGuard object that holds a reference to the value in the trie. If
   // the key does not exist in the trie, it will return std::nullopt.
   template <class T>
-  auto Get(std::string_view key) -> std::optional<ValueGuard<T>>;
+  auto Get(std::string_view key) -> std::optional<ValueGuard<T>> {
+    // std::lock_guard<std::mutex> lock(root_lock_);
+    const T* res = root_.Get<T>(key);
+    if(res) return ValueGuard<T>(root_, *res);
+    else return std::nullopt;
+  };
 
   // This function will insert the key-value pair into the trie. If the key already exists in the
   // trie, it will overwrite the value.
   template <class T>
-  void Put(std::string_view key, T value);
+  void Put(std::string_view key, T value) {
+    // std::lock_guard<std::mutex> lock(root_lock_);
+    std::lock_guard<std::mutex> wlock(write_lock_);
+    root_ = root_.Put<T>(key, std::move(value));
+  };
 
   // This function will remove the key-value pair from the trie.
-  void Remove(std::string_view key);
+  void Remove(std::string_view key) {
+    // std::lock_guard<std::mutex> lock(root_lock_);
+    std::lock_guard<std::mutex> wlock(write_lock_);
+    root_ = root_.Remove(key);
+  };
 
  private:
   // This mutex protects the root. Everytime you want to access the trie root or modify it, you
